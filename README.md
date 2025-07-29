@@ -26,7 +26,7 @@ Zhejiang University, Alibaba Group
 Clone the repo:
 
 ```
-git clone 
+git clone https://github.com/Omni-Avatar/OmniAvatar
 cd OmniAvatar
 ```
 
