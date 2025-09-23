@@ -1,0 +1,54 @@
+# LoRA fine-tuning aligned with paper Section 4.1
+
+# Pretrained model paths
+dtype: "bf16"
+text_encoder_path: pretrained_models/Wan2.1-T2V-14B/models_t5_umt5-xxl-enc-bf16.pth
+dit_path: pretrained_models/Wan2.1-T2V-14B/diffusion_pytorch_model-00001-of-00006.safetensors,pretrained_models/Wan2.1-T2V-14B/diffusion_pytorch_model-00002-of-00006.safetensors,pretrained_models/Wan2.1-T2V-14B/diffusion_pytorch_model-00003-of-00006.safetensors,pretrained_models/Wan2.1-T2V-14B/diffusion_pytorch_model-00004-of-00006.safetensors,pretrained_models/Wan2.1-T2V-14B/diffusion_pytorch_model-00005-of-00006.safetensors,pretrained_models/Wan2.1-T2V-14B/diffusion_pytorch_model-00006-of-00006.safetensors
+vae_path: pretrained_models/Wan2.1-T2V-14B/Wan2.1_VAE.pth
+wav2vec_path: pretrained_models/wav2vec2-base-960h
+
+# Output adapter path
+exp_path: checkpoints/OmniAvatar-LoRA-14B
+
+# Distributed
+reload_cfg: False
+sp_size: 1
+
+# Data and resolution
+seed: 42
+image_sizes_720: [[400, 720], [720, 720], [720, 400]]
+image_sizes_1280: [[720, 720], [528, 960], [960, 528], [720, 1280], [1280, 720]]
+max_hw: 720
+max_tokens: 30000
+fps: 25
+sample_rate: 16000
+
+# Training data manifest (edit to your path)
+train_manifest: data/train_manifest.txt
+
+# Optional caches for speedups
+cache_dir: cache/train_cache
+
+# LoRA hyperparameters (paper: rank=128, alpha=64, lr=5e-5)
+train_architecture: lora
+lora_rank: 128
+lora_alpha: 64
+lora_target_modules: "q,k,v,o,ffn.0,ffn.2"
+lr: 5e-5
+
+# Training schedule
+num_train_timesteps: 1000
+num_train_steps: 10000
+save_every: 1000
+audio_cfg_dropout: 0.1 # 10% audio CFG dropout
+prefix_latent_min: 1
+prefix_latent_max: 4
+
+# Phase 2 schedule: once training reaches this step, occasionally use 720p
+phase_two_start_step: 6000
+phase_two_highres_prob: 0.5
+
+# Dataloader
+batch_size: 1
+
+

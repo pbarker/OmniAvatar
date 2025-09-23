@@ -1,0 +1,588 @@
+OmniAvatar: Efficient Audio-Driven Avatar Video Generation
+with Adaptive Body Animation
+Qijun Gan1*, Ruizi Yang1*, Jianke Zhu1
+, Shaofei Xue2
+, Steven Hoi2
+1Zhejiang University, 2Alibaba Group
+{ganqijun,yangruizi,jkzhu}@zju.edu.cn, {shaofei.xsf,stevenhoi}@alibaba-inc.com
+Podcast Sing Interaction
+Emotions Background Gestures
+Figure 1: We introduce OmniAvatar, an innovative framework designed for avatar video generation based on audios and prompts
+across various scenes. By providing an audio clip and corresponding prompt, OmniAvatar produces a video where lip movements align with the audio, and the scene reflects the prompt.
+Abstract
+Significant progress has been made in audio-driven human
+animation, while most existing methods focus mainly on facial movements, limiting their ability to create full-body animations with natural synchronization and fluidity. They also
+struggle with precise prompt control for fine-grained generation. To tackle these challenges, we introduce OmniAvatar,
+an innovative audio-driven full-body video generation model
+that enhances human animation with improved lip-sync accu-
+* Work done during internship at Alibaba Group.
+racy and natural movements. OmniAvatar introduces a pixelwise multi-hierarchical audio embedding strategy to better
+capture audio features in the latent space, enhancing lipsyncing across diverse scenes. To preserve the capability for
+prompt-driven control of foundation models while effectively
+incorporating audio features, we employ a LoRA-based training approach. Extensive experiments show that OmniAvatar
+surpasses existing models in both facial and semi-body video
+generation, offering precise text-based control for creating
+videos in various domains, such as podcasts, human interactions, dynamic scenes, and singing. Our project page is
+https://omni-avatar.github.io/.
+1 Introduction
+The ability to generate realistic and expressive human
+avatars from conditions has become a cornerstone of digital human research. Portrait video generation, which focuses
+on generating high-quality visual representations of human
+faces and bodies from audio or other inputs, plays a critical
+role in fields such as virtual assistants and film production.
+As interactive AI and virtual environments become increasingly sophisticated, the need for dynamic, lifelike avatars
+that can engage users through natural and expressive movements, rather than a talking face, is more important than ever.
+The recent advancements (Meng et al. 2024; Wei et al.
+2025; Chen et al. 2025b; Cui et al. 2024b; Jiang et al. 2024;
+Wang et al. 2025; Lin et al. 2025) in audio-driven human animation have significantly improved the realism and naturalness of character generation. However, most existing methods (Ji et al. 2024; Wang et al. 2024; Wei, Yang, and Wang
+2024) focus on driving only the facial movements based on
+the audio input, limiting their ability to produce full-body
+animations that have natural movements of the human body.
+To address this challenge, methods such as Hallo3 (Cui
+et al. 2024b), FantasyTalking (Wang et al. 2025), and HunyuanAvatar (Chen et al. 2025b) have adapted current stateof-the-art text-to-video (T2V) or image-to-video (I2V) base
+models (Yang et al. 2024; Wan et al. 2025; Kong et al.
+2024) for audio-driven animation. Echomimicv2 (Meng
+et al. 2024), Tango (Liu et al. 2024) and Cyberhost (Lin et al.
+2024) leverage motion-related conditions to generate human
+animation videos, focusing on the integration of motion data
+to enhance the generation of realistic body movements. Despite recent progress, methods in full-body animation face
+several challenges. First, training a full-body model introduces complexities, particularly in maintaining accurate lipsyncing while generating coherent and realistic body movements. Second, current models often struggle with generating natural body movements, leading to stiff or unnatural
+poses. Moreover, text-based control of body gestures and
+background movements remains challenging, limiting the
+customization and adaptability of the generated avatars in
+dynamic contexts.
+To address these challenges, we propose OmniAvatar, a
+novel model for audio-driven full-body video generation
+with adaptive body animation. To enhance the naturalness of
+generated body movements, rather than cross-attention (Cui
+et al. 2024b; Wang et al. 2025), the audio features are
+mapped into the latent space using a proposed audio pack
+method, and then embedded into the latent space at the pixel
+level. This approach improves the ability to perceive and incorporate audio features spatially. To address the lip-syncing
+challenges across diverse human scenes, we introduce a
+multi-hierarchical audio embedding strategy, which ensures
+accurate synchronization between audio and lip movements.
+Additionally, by utilizing LoRA-based training, we preserve
+the foundation model’s capabilities while efficiently adapting it to handle the newly introduced audio features. This enables OmniAvatar to produce high-quality videos where the
+generated avatars not only have accurate lip-syncing but also
+display realistic and adaptive full-body animations. Meanwhile, OmniAvatar demonstrates greater sensitivity to text
+conditions and provides more controllable generation.
+Extensive experiments show that our model achieves leading results in both facial and semi-body portrait video generation on test datasets. As illustrated in Fig. 1, our model also
+supports more precise text-based control, making it proficient in generating videos across various domains, including
+podcasts, human-object interactions, dynamic scenes, and
+singing.
+In summary, our contributions are as follows:
+• We propose a LoRA-based audio-conditioned portrait
+video generation model, which enables natural and adaptive body movements and accurate text-based control for
+generating human animation videos.
+• Our multi-hierarchical pixel-wise audio embedding
+method improves lip-sync accuracy, ensuring precise
+synchronization between audio and lip movements.
+• Our model is capable of generating videos featuring natural human body movements, controllable emotions and
+gestures, and dynamic backgrounds, making it versatile
+and effective in various applications and scenarios.
+2 Related Work
+2.1 Video Generation
+Recent progress in video generation builds on the success of
+diffusion-based image synthesis (Dhariwal and Nichol 2021;
+Rombach et al. 2022). UNet-based diffusion models pretrained on images are first extended to the temporal domain.
+Make-A-Video (Singer et al. 2022) inserts temporal attention to create short clips with strong spatial fidelity, while
+AnimateDiff (Guo et al. 2023) adds motion-aware modules
+and cross-frame constraints to improve temporal smoothness and enable human-centric content.
+Building on these foundations, models shift toward
+transformer-based architectures to better capture longrange temporal dependencies and semantic consistency.
+CogVideo (Yang et al. 2024) and Goku (Chen et al. 2025a)
+advance text-to-video generation by leveraging large-scale
+vision-language pretraining and hierarchical token fusion,
+enabling fine-grained semantic alignment from text prompts.
+HunyuanVideo (Kong et al. 2024) extends this line of work
+by integrating multimodal prompts into a dual-stream DiTbased framework, supporting precise conditional control
+across diverse scenarios. Wan (Wan et al. 2025) further contributes a suite of large-scale video generation models with
+strong scalability and competitive performance.
+2.2 Audio-Driven Video Generation
+Early audio-driven human animation relies on two-stage
+pipelines that first predict motion parameters—typically
+via 3D Morphable Models (3DMM) (Blanz and Vetter
+2003)—and then render frames (Zhang et al. 2023; Shen
+et al. 2023; Wei, Yang, and Wang 2024). Although interpretable, these cascaded methods suffer from limited expressiveness and temporal drift.
+Driven by diffusion models, recent research converges on
+end-to-end generation. Representative diffusion-based systems introduce multi-stage refinement and long-range attention to boost realism and coherence (Chen et al. 2025c;
+Audio
+First
+Images
+Ref
+Image
+Layer Norm
+Self-Attention
+Layer Norm
+Cross
+-Attention
+Layer Norm
+FFN
+LoRA
+🔥
+LoRA
+🔥
+LoRA
+🔥
+Wav2Vec Audio Pack
+🔥
+Projection🔥
+Timestep 𝑇
+Text Prompt: A realistic video, in which
+a person speaks to the camera…
+3D
+VAE
+3D
+VAE
+C +
+×𝑁
+3D
+VAE
+Output Video
+Repeat
+🔥Trainable
+❄
+Frozen
+❄
+❄
+❄
+❄
+❄
+Concat Add
+Noise
+Figure 2: Overview of OmniAvatar. Our design integrates the simplicity of Wan (Wan et al. 2025). Based on text, image, and
+audio inputs, OmniAvatar generates lifelike human videos, producing highly realistic and expressive character animations.
+Meng et al. 2024; Xu et al. 2024; Cui et al. 2024a,b). VExpress (Wang et al. 2024) leverages conditional dropout
+or cyclic prediction to balance weak (audio) and strong (visual) cues. Loopy (Jiang et al. 2024) leverage long-term motion information to earn natural motion patterns. Under datalean or ambiguous settings, emotion-aware objectives and
+end-effector guidance refine lip-sync fidelity and facial detail (Tian et al. 2024, 2025; Wang et al. 2025; Wei et al.
+2025; Ji et al. 2024). Meanwhile, localized attention and
+gesture-adaptive conditioning improve controllability and
+efficiency for semi-body synthesis (Lin et al. 2024; Liu et al.
+2024; Guo et al. 2024). Toward foundation-level capability,
+OmniHuman (Lin et al. 2025) unifies one-stage generation
+across different identities and scenarios with multiple conditions, whereas HunyuanVideo-Avatar (Chen et al. 2025b)
+and MultiTalk (Kong et al. 2025) scales to multi-character,
+high-fidelity human video generation. While current models are still facing challenges in achieving lip-sync accuracy
+and generating fluid, natural full-body movements simultaneously in audio-driven human video generation.
+3 OmniAvatar
+OmniAvatar aims to create talking avatar videos with the
+input of a single reference image, audio, and a prompt,
+while featuring adaptive and natural body animations. The
+overview of OmniAvatar is illustrated in Fig. 2. To capture audio features at multiple levels, we introduce a multihierarchical audio embedding strategy which maintains
+pixel-wise alignment between the audio and video (Sec 3.2).
+Additionally, to retain the powerful capabilities of the foundation model while incorporating audio as new conditions,
+we apply LoRA-based training to layers of the DiT model
+(Sec 3.3). To maintain consistency and temporal continuity
+in long video generation, we leverage frame overlapping and
+reference image embedding strategy (Sec 3.4).
+3.1 Preliminaries
+Diffusion Models. We employ a latent diffusion model
+(LDM) (Rombach et al. 2022) for efficient video generation, which learns to reverse a diffusion process upon the
+latent space, progressively transforming noise into data. The
+process begins with latents z of data (e.g., images, videos)
+being corrupted by Gaussian ϵ noise over t steps, zt = √
+αtz +
+√
+1 − αtϵ, where αt represents the noise scheduler.
+The model ϵθ is trained to reverse this noise diffusion process by
+L = Et,zt,c,ϵ∼N(0,1)
+∥ϵθ(zt, t, c) − ϵ∥
+2
+2
+
+,
+where c denotes the conditions. In essence, the model learns
+to denoise the noisy data step by step to recover the original sample. Diffusion models have demonstrated impressive
+performance in generating high-quality samples in various
+domains, including image and video synthesis. Specially, the
+latent z can be encoded from VAE (Kingma 2013) encoder
+and be decoded back to the raw data with VAE decoder.
+Diffusion Transformers. Diffusion Transformers
+(DiT) (Peebles and Xie 2023) extend traditional diffusion models by utilizing transformer architecture (Vaswani
+2017) to model the denoising process. The DiT architecture
+replaces traditional convolutional layers with self-attention
+mechanisms, allowing it to learn more complex dependencies in the data, which is particularly useful when handling
+high-dimensional video or long sequences. Specifically, we
+adopt Wan2.1 (Wan et al. 2025) as the foundational model.
+By employing a transformer-based denoising network with
+full-attention in the latent space, DiT improves the model’s
+capacity to generate high-fidelity and consistent video
+sequences over long periods, an essential property in avatar
+video generation.
+Low-Rank Adaptation. Low-Rank Adaptation
+(LoRA) (Hu et al. 2022) improves the efficiency of
+fine-tuning large models by introducing low-rank decomposition into weight matrices, reducing the number of trainable
+Audio Embedding
+Rearrange
+𝑐
+𝑇
+Linear
+𝑐
+𝑇/4
+Padding
+Figure 3: Design of Audio Pack. To align the audio features
+to the latent space, audio pack rearranges the padded audio,
+and then map into audio latent by a linear layer.
+parameters while retaining the model’s adaptability. This is
+especially effective for adapting pre-trained models, without
+requiring full retraining. LoRA achieves this by updating
+the weight matrices with low-rank approximations during
+training
+W′ = W + ∆W, ∆W = AB,
+where W is the original weight matrix, and ∆W is the lowrank update, with A and B being the low-rank matrices. This
+allows the model to efficiently adapt to new tasks, while
+maintaining high-quality output and low training computational cost.
+3.2 Audio Embedding Strategy
+Most existing methods (Cui et al. 2024b; Wang et al. 2025;
+Chen et al. 2025b; Meng et al. 2024) typically rely on crossattention mechanisms to introduce audio features, where the
+audio information is conditioned on visual features through
+attention layers. While this approach can lead to good results, it introduces additional computational overhead and
+tends to overly focus on the relationship between the audio
+and facial features. In contrast, we propose a pixel-wise audio embedding strategy, where audio features are directly
+incorporated into the model’s latent space at pixel level. By
+embedding audio features with pixel-wised fusion, we naturally align lip movements with the audio. And by ensuring
+the audio information is evenly distributed across the entire
+video pixels, model results in more holistic and natural body
+movements in response to the audio.
+Given an audio sequence of length T, we use
+Wav2Vec2 (Baevski et al. 2020) for audio feature extraction.
+Each video, with a length T, is compressed into T +3
+4
+latent
+frames using a pretrained 3D VAE, where the factor of 4 is
+the time compression ratio of the VAE. To ensure temporal
+alignment between the audio features and the compressed
+video latent, we follow the compression pattern of the VAE.
+First, we pad the audio feature sequence a before the initial frame to match the time length T + 3. Then, the audio
+features are grouped into pieces with a compression rate of
+4, matching the VAE latent space compression rate, and are
+subsequently mapped to the latent space za with audio pack
+module. Audio pack compresses the rearranged audio with
+linear mapping, as shown in Fig. 3.
+To integrate the audio features into the video latent space,
+we project the audio latent into a space that can be aligned
+with the video latent. Then, the audio latent is embedded
+into the video latent at pixel level:
+za = Pack(a); z
+′i
+t = z
+i
+t + P
+i
+a
+(za)
+where z
+i
+t
+is the latent vector of i DiT block corresponding
+to the video at time step t. Pa denotes the audio projection
+operation and Pack refers to the audio compression function.
+By embedding pixel-wise audio features into the video
+latent space, the generated human motions are adaptively
+guided by the audio input. To ensure the model effectively
+learns and retains audio features in deep networks, we employ a multi-hierarchical audio embedding approach that integrates audio embeddings at different stages within the DiT
+blocks. To prevent the audio features from excessively influencing the latent features, we apply audio embeddings
+only to the layers between the second and the middle layers
+of the model. Additionally, the weights for these layers are
+not shared, allowing the model to maintain separate learning
+paths for different levels of audio integration.
+3.3 LoRA-based DiT Optimization
+Previous methods for audio-conditioned diffusion models
+typically follow one of two strategies: either training the full
+model (Lin et al. 2025; Chen et al. 2025b) or fine-tuning
+only specific layers (Cui et al. 2024b; Wang et al. 2025).
+When performing full training, we notice that updating all
+layers leads to degradation in the capability of the model to
+generate coherent and high-quality video sequences. Specifically, the model generates unrealistic or static content more
+easily, while struggling to capture fine details. This occurs
+because the model overfits to the human speech datasets,
+leading to poor generalization and difficulty in controlling
+the video generation. On the other hand, freezing the DiT
+model and only fine-tuning the layers responsible for processing the audio features results in poor alignment between
+audio and video. The lip-sync performance is compromised
+because the model struggles to accurately map audio features to realistic facial movements.
+To overcome these challenges, we propose a balanced
+fine-tuning strategy based on LoRA. Instead of fine-tuning
+all layers or just updating the audio-related layers, we use
+LoRA strategy to adapt the model efficiently. LoRA introduces low-rank matrices into the weight updates of the attention and feed-forward (FFN) layers, allowing the model
+to learn audio-conditioned behavior without altering the underlying model’s capacity.
+3.4 Long Video Generation
+Generating long, continuous videos is crucial for audiodriven avatar video generation. The ability to generate extended videos, without compromising the visual quality or
+temporal consistency, presents a significant challenge. To
+address this, we employ reference image embedding strategy to preserve the identity and frame overlapping for temporal consistency. Algo. 1 shows the inference pipeline for
+long video generation.
+Algorithm 1: Long Video Inference
+Input: Audio latents za with length l , Pretrained model, Inference length s, Overlap length f, First frame latents zref
+Output: Denoised video latents z0
+Function LongVideoInference(a, l, s, f, zref):
+N, lpad = FindLoopN(l, s) ; // get loop times
+za ← Zeros(1) + za + Zeros(lpad); // pad input
+zT ← zref + Noise(l + lpad);
+l = l + lpad + 1; n = 0;
+for i = 1, . . . , N do
+if i = 0 then
+// use first frame as prefix
+fi = 0; zprefix = zref;
+end
+else
+// use previous suffix
+fi = f; zT ← zprefix + zT ;
+end
+n = n − fi
+; ; // overlap
+z
+[n,n+s]
+0 = Model(z
+[n,n+s]
+a , z
+[0,s]
+T
+, zref);
+zT = z
+[s,l]
+T
+; zprefix = z
+[n+s−f,n+s]
+0
+;
+n = n + s; ; // move to the next clip
+end
+return Denoised latent z0
+Identity Preservation. To preserve the identity throughout
+the video generation process, we utilize reference image embedding strategy, which introduce a reference frame that
+serves as a fixed guidance of identity. Specifically, we extract the latent representation of the reference frame and repeat it to match the length of the video. This repeated reference latent is then concatenated with the video latent at each
+time step, ensuring that the avatar’s appearance remains consistent across all frames. By using this reference frame, we
+effectively anchor the identity of the avatar, ensuring its visual characteristics remain consistent throughout the video
+sequence.
+Temporal Consistency. Maintaining temporal consistency
+is crucial for creating long, continuous videos with smoothing frame transitions. To achieve seamless video continuity, we use a latent overlapping strategy. We train the model
+with a combination of single-frame and multi-frame prefix
+latents. During inference, the first batch of frames is generated using the reference frame as both the prefix latent and
+identity guidance. For subsequent batches, the last frames
+from the previous batch serve as the prefix latents, while the
+reference frame remains fixed to guide identity. This overlap ensures smooth transitions between video segments, preserving temporal continuity and preventing abrupt changes
+in motion or appearance.
+4 Experiments
+4.1 Experimental Setups
+Implementation. To train OmniAvatar, we use Wan2.1-
+T2V-14B (Wan et al. 2025) as the base model. The training
+process consists of two phases. In the first phase, we train
+the model on low-resolution (480p) audio-video data to establish fundamental audio-visual alignment. In the second
+phase, we combine both low-resolution and high-resolution
+audio-video data to further refine the model, with the goal
+of improving motion stability. The maximum latent token
+length for video during training is set to 30,000, and 10% of
+the data is dropped for audio to perform classifier-free guidance. During training, we pre-extract the video latents and
+caption embeddings for efficiency and randomly select the
+length of prefix latent between 1 and 4. For the LoRA optimization, we set the rank to 128 and the alpha to 64, ensuring a balance between efficient fine-tuning and preserving
+the performance of the base model. The training process is
+conducted on 64 A100 80GB GPUs, with a learning rate set
+to 5e-5.
+During inference, we apply a 13-frame video overlap for
+long video generation. The denoising process runs for 25
+steps, with both the audio and text classifier-free guidance
+(CFG) set to 4.5 for stable video generation.
+Dataset. We use the fully open-source AVSpeech (Ephrat
+et al. 2018) dataset for training our model. AVSpeech is a
+large-scale audio-visual dataset containing over 4700 hours
+of human video. To ensure high-quality training data, we utilize SyncNet (Chung and Zisserman 2017) and Q-Align (Wu
+et al. 2023) to filter for higher-quality videos by evaluating
+lip-sync accuracy and video fidelity. After applying these filters, we obtain a subset of 774,207 samples with durations
+ranging from 3 to 20 seconds, totaling approximately 1,320
+hours of data. From this dataset, we randomly select 100
+samples for the semi-body test set, with the remaining data
+used for training. For comprehensive evaluation with existing methods, we select 100 samples from the HDTF (Zhang
+et al. 2021) dataset as an extra talking face test set.
+Metrics. To validate the performance of our model, we
+use FID (Heusel et al. 2017) to evaluate the quality of
+generated images. For video quality assessment, we use
+FVD (Unterthiner et al. 2018). Additionally, we employ the
+Q-align (Wu et al. 2023) visual language model to evaluate the video quality (IQA) and aesthetic metrics (ASE). For
+assessing the synchronization of generated lip movements
+with audio, we use Sync-C and Sync-D metrics (Chung and
+Zisserman 2017).
+4.2 Comparisons with Existing Methods
+Comparison on Talking Face. We compare OmniAvatar with several existing talking face methods, including Sadtalker (Zhang et al. 2023), Aniportrait (Wei,
+Yang, and Wang 2024), V-express (Wang et al. 2024),
+EchoMimic (Chen et al. 2025c), Hallo3 (Cui et al. 2024b),
+FantasyTalking (Wang et al. 2025), HunyuanAvatar (Chen
+et al. 2025b) and MultiTalk (Kong et al. 2025). The experiments are conducted on two test sets: the HDTF (Zhang
+et al. 2021) test set and the cropped face test set from
+Methods FID ↓ FVD ↓ Sync-C ↑ Sync-D ↓ IQA ↑ ASE ↑
+HDTF
+Sadtalker (Zhang et al. 2023) 50.0 538 7.01 8.54 3.16 2.23
+Aniportrait (Wei, Yang, and Wang 2024) 46.1* 546* 3.64* 10.79* 3.96* 2.35*
+V-express (Wang et al. 2024) 59.1* 548* 8.02* 7.69* 3.32* 1.96*
+EchoMimic (Chen et al. 2025c) 61.7* 575* 5.71* 9.14* 3.61* 2.19*
+Hallo3 (Cui et al. 2024b) 42.1 406 6.89 8.71 3.55 2.15
+FantasyTalking (Wang et al. 2025) 43.9 441 3.75 11.0 3.59 2.17
+HunyuanAvatar (Chen et al. 2025b) 47.3 588 7.31 8.33 3.58 2.20
+MultiTalk (Kong et al. 2025) 44.2 436 7.63 7.78 3.54 2.14
+GT - - 8.20 6.89 3.94 2.48
+Ours 37.3 382 7.62 8.14 3.82 2.41
+AVSpeech-Face
+Sadtalker (Zhang et al. 2023) 103 1182 4.31 9.68 2.45 1.49
+Aniportrait (Wei, Yang, and Wang 2024) 100 1095 2.09 11.6 2.31 1.39
+V-express (Wang et al. 2024) 194 1589 6.19 8.88 2.26 1.54
+EchoMimic (Chen et al. 2025c) 69.1 751 4.31 9.81 2.71 1.56
+Hallo3 (Cui et al. 2024b) 68.6 703 4.93 9.76 2.64 1.49
+FantasyTalking (Wang et al. 2025) 86.1 885 3.34 11.1 2.69 1.57
+HunyuanAvatar (Chen et al. 2025b) 88.6 796 5.97 8.66 2.52 1.45
+MultiTalk (Kong et al. 2025) 78.3 729 6.23 8.43 2.74 1.59
+GT - - 7.08 8.07 2.54 1.47
+Ours 66.5 692 6.32 8.38 2.63 1.51
+Table 1: Quantitative comparison on the test set with existing audio-driven talking face video generation methods.
+Methods FID ↓ FVD ↓ Sync-C ↑ Sync-D ↓ IQA ↑ ASE ↑
+Hallo3 (Cui et al. 2024b) 104 1078 5.23 9.54 3.41 2.00
+FantasyTalking (Wang et al. 2025) 78.9 780 3.14 11.2 3.33 1.96
+HunyuanAvatar (Chen et al. 2025b) 77.7 887 6.71 8.35 3.61 2.16
+MultiTalk (Kong et al. 2025) 74.7 787 4.76 9.99 3.67 2.22
+GT - - 6.75 7.76 3.92 2.38
+Ours 67.6 664 7.12 8.05 3.75 2.25
+Table 2: Quantitative comparison on the AVSpeech (Ephrat et al. 2018) test set with existing audio-driven semi-body video
+generation methods. ∗ denotes the test videos maybe are used to train by the methods.
+First Image
+Hallo3
+EchoMimic
+FantasyTalking
+HunyuanAvatar
+Ours
+GT
+MultiTalk
+Figure 4: The qualitative comparison on HDTF (Zhang et al. 2021) and AVSpeech (Ephrat et al. 2018) for facial generation.
+We use cropped square faces as input in the AVSpeech test set.
+Input FantasyTalking HunyuanAvatar MultiTalk OmniHuman Ours GT
+Figure 5: Visual comparison for semi-body generation on AVSpeech (Ephrat et al. 2018) test set.
+AVSpeech (Ephrat et al. 2018). Fig. 4 presents the qualitative results, demonstrating that our model generates videos
+with superior image quality, more natural and expressive facial movements, and enhanced visual aesthetics. With our
+designed pixel-wised audio embedding strategy, the generated videos demonstrate more accurate lip-syncing, and a
+more realistic alignment between the audio and facial expressions.
+The quantitative results in Tab. 1 further confirm the superiority of OmniAvatar. Our model achieves leading performance in Sync-C, showcasing superior lip-sync accuracy,
+which is a key measure for talking face methods. We also
+achieve competitive results in other metrics like FID, FVD,
+and IQA, reflecting our model’s ability to generate highquality and perceptually accurate images and videos. While
+methods like Sadtalker and V-express achieve decent lipsync scores, OmniAvatar stands out due to its balance of
+high video quality, lip-sync precision, and aesthetic appeal.
+FantasyTalking (Wang et al. 2025) and MultiTalk (Kong
+et al. 2025), although trained based on Wan (Wan et al.
+2025), freezes the weights of diffusion blocks, which restricts its ability to align audio and video effectively. HunyuanAvatar (Chen et al. 2025b) demonstrates competitive
+lip-sync capabilities, while our method achieves superior
+image quality, offering more visually appealing results while
+maintaining high lip-sync accuracy.
+Comparison on Semi-Body Animation. We compare OmniAvatar with FantasyTalking (Wang et al. 2025), HunyuanAvatar (Chen et al. 2025b), MultiTalk (Kong et al. 2025)
+and OmniHuman (Lin et al. 2025) on semi-body animation
+tasks using the AVSpeech test set in semi-body scenarios.
+Our method outperforms these existing methods across both
+qualitative and quantitative evaluations. The qualitative results, shown in Fig. 5, demonstrate that OmniAvatar generates more natural and fluid body movements while preserving realistic and synchronized lip-syncing. The generated
+videos exhibit smoother transitions, more coherent upperbody movements.
+Table 2 shows that OmniAvatar excels in several key metrics for semi-body video generation, especially in audio-lip
+synchronization and overall video quality. The results confirm that OmniAvatar not only excels at generating realistic
+body movements but also maintains seamless audio-visual
+Methods FVD ↓ Sync-C ↑ Sync-D ↓ IQA ↑
+Frozen-DiT 678 4.26 9.98 3.74
+Full-Training 715 5.58 9.23 3.54
+LoRA+SHE 685 6.58 8.73 3.73
+CFG-3 677 6.92 8.08 3.70
+CFG-6 669 7.37 7.94 3.67
+Wan-1.3B 711 3.75 9.72 2.24
+Ours 664 7.13 8.05 3.75
+Table 3: Ablation study on model design. We conduct experiments on model selection, classifier-free guidance settings
+and model size. SHE represents audio input through single
+hierarchical embedding.
+synchronization.
+More results The results shown in Fig. 6 illustrate the versatility of OmniAvatar in generating realistic video animations. Attributed to the text control capability of Wan2.1-
+T2V and our LoRA training design, not only can it generate natural human movements in response to audio, but it
+also supports the interaction between the avatars and surrounding objects. OmniAvatar also enables gesture manipulation and background control, making it a powerful tool for
+dynamic, interactive, audio-driven video generation across
+various scenarios. The emotions of characters can also be
+controlled by prompts, as shown in the Fig. 7.
+4.3 Ablation Studies
+Ablation on LoRA and full training. Although full training results in faster convergence and better scene adaptation,
+as shown in Tab. 3, it may reduce the quality of video generation. Due to the constraints of the dataset quality, particularly the lack of high-resolution portrait data, full training
+can lead to a degradation in image quality and cause distortions. Motion blur in low-quality data can negatively impact the performance of human motion elements, like hands
+and mouths, in the generated video, resulting in lower lipsync scores. As shown in Fig. 8, full training will damage to
+character details such as hands and eyes. On the other hand,
+the design of LoRA effectively preserves the original capabilities of the model while seamlessly integrating the newly
+introduced audio features, allowing for high-quality outputs
+with the incorporation of additional audio conditioning.
+… he uses
+right hand
+to elegantly
+pick up the
+cup…
+🎵
+🔊
+…She uses left
+hand to pick
+up the bottle… 🔊
+…effects
+flow in
+the air…
+… petals
+fall
+around
+… 🎵
+…She is
+playing
+the guitar… 🔊 🎵
+…right
+hands
+point to
+screem
+…
+Figure 6: Driven by a piece of audio and a specific prompt, OmniAvatar can manage various scenes, including human-object
+interactions, gesture control, and dynamic background configuring. Happy
+Angry
+Sad
+Surprised
+HunyuanAvatar Ours
+Happy Angry Sad Surprise
+d
+Figure 7: Facial expression control. By configuring
+prompts to control the emotions of characters. The two lines
+above are a comparison with HunyuanAvatar (Chen et al.
+2025b), using the same set of audio and images.
+Input Full LoRA
+Figure 8: Ablation study on different training strategies: full
+training vs. LoRA-based training.
+Ablation on Multi- and Single-hierarchical Audio Embedding. We conduct an ablation experiment by adding
+audio embedding to only a single layer for comparison.
+To align with the perception field of the model, the audio embedding is applied at the middle layer. As shown
+in the Tab. 3, the multi-hierarchical audio embedding approach leads to better audio synchronization performance.
+This highlights the benefit of integrating audio features at
+various levels, enabling more precise alignment between the
+audio and the generated video.
+Ablation on Classifier-Free Guidance (CFG). The experiment demonstrates that higher values of classifier-free guidance (CFG) improve the synchronization between lip movements and pose generation, resulting in more accurate alignment with the audio. However, excessive high CFG values
+can lead to exaggerated lip movements, causing unrealistic character expressions and unnatural video generation.
+Therefore, we choose 4.5 as a reasonable value for CFG of
+audio and text.
+5 Conclusion
+We propose OmniAvatar, a novel model for audio-driven
+full-body video generation that improves the naturalness and
+expressiveness of generated human avatars. By introducing a pixel-wise multi-hierarchical audio embedding strategy and leveraging LoRA-based training, our model addresses the key challenges of synchronizing lip movements
+and generating realistic, dynamic body movements simultaneously. Extensive experiments on test datasets demonstrate
+that OmniAvatar achieves state-of-the-art results in both facial and semi-body portrait video generation. Furthermore,
+our model excels in precise text-based control, enabling the
+generation of high-quality videos across various domains.
+6 Appendix
+6.1 More Visualization Results
+Fig. 9 shows the visualization results on more scenarios,
+such as video with realistic painting style, plain painting
+style, oil painting style, cartoon painting style, human-object
+interaction, background moving, etc.
+6.2 Limitation and Discussion
+Despite the significant advances made by OmniAvatar, there
+are a few limitations. First, our model inherits the weaknesses of the base model, Wan (Wan et al. 2025), such as
+color shifts and error propagation in long video generation.
+These issues arise as inaccuracies accumulate over time, particularly in extended videos. Second, while LoRA preserves
+the model’s capabilities, complex text-based control, such
+as distinguishing which character is speaking or handling
+multi-character interactions, remains a challenge.
+Additionally, diffusion-based inference requires a large
+number of denoising steps, resulting in long inference times.
+This makes real-time video generation challenging, limiting
+the applicability of the model in scenarios that demand fast,
+interactive responses. Addressing these issues in future work
+will improve the efficiency and versatility of OmniAvatar for
+a wider range of applications.

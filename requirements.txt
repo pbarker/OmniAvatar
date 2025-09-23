@@ -1,9 +1,13 @@
 librosa==0.10.2.post1
 tqdm
-peft==0.15.1
+peft>=0.17.0
 transformers==4.52.3
 scipy==1.14.0
 numpy==1.26.4 
 xfuser==0.4.1
 ftfy
 einops
+modal
+pyyaml
+av
+huggingface_hub[cli]
