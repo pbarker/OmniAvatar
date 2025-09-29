@@ -19,7 +19,7 @@ seed: 42
 image_sizes_720: [[400, 720], [720, 720], [720, 400]]
 image_sizes_1280: [[720, 720], [528, 960], [960, 528], [720, 1280], [1280, 720]]
 max_hw: 720
-max_tokens: 30000
+max_tokens: 12000
 fps: 25
 sample_rate: 16000
 
@@ -39,7 +39,7 @@ lr: 5e-5
 # Training schedule
 num_train_timesteps: 1000
 num_train_steps: 10000
-save_every: 1000
+save_every: 50
 audio_cfg_dropout: 0.1 # 10% audio CFG dropout
 prefix_latent_min: 1
 prefix_latent_max: 4
@@ -50,5 +50,19 @@ phase_two_highres_prob: 0.5
 
 # Dataloader
 batch_size: 1
+
+# Memory controls
+enable_vram_management: true
+enable_grad_ckpt: true
+num_persistent_param_in_dit: 0
+
+# Finetuning controls
+loss_ema_decay: 0.98
+early_stop_patience: 200
+early_stop_min_delta: 0.0001
+# Stop if no eval improvement after this many evals (0 disables eval-count patience)
+early_stop_patience_evals: 5
+# Default: try to resume from an existing OmniAvatar LoRA if present
+lora_checkpoint: "pretrained_models/OmniAvatar-14B/pytorch_model.pt"
 
 

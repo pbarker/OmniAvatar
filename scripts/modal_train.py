@@ -1,3 +1,4 @@
+import glob
 import os
 import subprocess
 from typing import Optional
@@ -8,14 +9,18 @@ app = modal.App("omniavatar-train")
 
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+VOL_NAME = os.environ.get("OMNIAVATAR_MODAL_VOLUME", "omniavatar-cache")
+vol = modal.Volume.from_name(VOL_NAME, create_if_missing=True)
 image = (
     modal.Image.debian_slim(python_version="3.12")
     .apt_install("ffmpeg")
     .pip_install_from_requirements("requirements.txt")
     .run_commands(
-        # Install NVIDIA CUDA wheels for torch/vision/audio
+        # Install matching CUDA wheels without pinning exact versions
         "pip install --upgrade pip",
-        "pip install torch==2.4.0 torchvision==0.19.0 torchaudio==2.4.0 --index-url https://download.pytorch.org/whl/cu124",
+        # "pip install --index-url https://download.pytorch.org/whl/cu126 torch torchvision torchaudio",
+        "pip install torch torchvision torchaudio",
+        "pip install deepspeed",
     )
     .add_local_dir(local_path=REPO_ROOT, remote_path="/workspace")
 )
@@ -24,44 +29,128 @@ image = (
 # No Mount API required when baking repo into image
 
 
-@app.function(image=image, gpu="A10G", timeout=60 * 60 * 24)
+@app.function(image=image, gpu="A10G", timeout=60 * 60 * 24, volumes={"/vol": vol})
 def train(
     config_path: str = "configs/train_lora.yaml",
     nproc: int = 1,
     extra_hp: Optional[str] = None,
 ):
     os.chdir("/workspace")
-    # Ensure required pretrained weights exist inside the container
-    needed = [
-        "pretrained_models/Wan2.1-T2V-14B/diffusion_pytorch_model-00001-of-00006.safetensors",
-        "pretrained_models/Wan2.1-T2V-14B/Wan2.1_VAE.pth",
-        "pretrained_models/Wan2.1-T2V-14B/models_t5_umt5-xxl-enc-bf16.pth",
-        "pretrained_models/wav2vec2-base-960h",
+    # Improve allocator behavior on large models
+    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+    os.environ.setdefault("TORCH_ALLOW_TF32", "1")
+    # Target latest arch when compiling small custom kernels (use 10.0 format for sm_100)
+    os.environ.setdefault("TORCH_CUDA_ARCH_LIST", "10.0")
+    # Make Hugging Face caches persistent across runs
+    os.environ.setdefault("HF_HOME", "/vol/hf")
+    os.environ.setdefault("HUGGINGFACE_HUB_CACHE", "/vol/hf")
+    os.environ.setdefault("TRANSFORMERS_CACHE", "/vol/hf")
+    # Expose volume name to training script for fetch hints
+    os.environ.setdefault("OMNIAVATAR_MODAL_VOLUME", VOL_NAME)
+    # Deepspeed: avoid building CUDA ops inside container
+    os.environ.setdefault("DS_BUILD_OPS", "0")
+    os.environ.setdefault("DS_BUILD_AIO", "0")
+    os.environ.setdefault("DS_BUILD_SPARSE_ATTN", "0")
+    os.environ.setdefault("DS_BUILD_UTILS", "0")
+    os.environ.setdefault("DS_SKIP_CUDA_CHECK", "1")
+    # Diagnostics
+    try:
+        import torch
+
+        print("[diag] torch:", torch.__version__, "cuda:", torch.version.cuda)
+        if torch.cuda.is_available():
+            print(
+                "[diag] device:",
+                torch.cuda.get_device_name(0),
+                "cap:",
+                torch.cuda.get_device_capability(0),
+            )
+        try:
+            out = (
+                subprocess.check_output(
+                    [
+                        "nvidia-smi",
+                        "--query-gpu=driver_version,name",
+                        "--format=csv,noheader",
+                    ]
+                )
+                .decode()
+                .strip()
+            )
+            print("[diag] nvidia-smi:", out)
+        except Exception:
+            pass
+    except Exception:
+        pass
+    # Ensure required pretrained weights and output dirs exist in persistent volume
+    os.makedirs("/vol/pretrained_models", exist_ok=True)
+    os.makedirs("/vol/outputs/eval", exist_ok=True)
+    vol_needed = [
+        "/vol/pretrained_models/Wan2.1-T2V-14B/diffusion_pytorch_model-00001-of-00006.safetensors",
+        "/vol/pretrained_models/Wan2.1-T2V-14B/Wan2.1_VAE.pth",
+        "/vol/pretrained_models/Wan2.1-T2V-14B/models_t5_umt5-xxl-enc-bf16.pth",
+        "/vol/pretrained_models/wav2vec2-base-960h",
+        "/vol/pretrained_models/OmniAvatar-14B/pytorch_model.pt",
     ]
-    if not all(os.path.exists(p) for p in needed):
-        os.makedirs("pretrained_models", exist_ok=True)
-        # Base Wan 14B
+    if not all(os.path.exists(p) for p in vol_needed):
+        # Download to volume using hf cli
         subprocess.run(
             [
-                "huggingface-cli",
+                "hf",
                 "download",
                 "Wan-AI/Wan2.1-T2V-14B",
                 "--local-dir",
-                "./pretrained_models/Wan2.1-T2V-14B",
+                "/vol/pretrained_models/Wan2.1-T2V-14B",
             ],
             check=True,
         )
-        # Wav2Vec2
         subprocess.run(
             [
-                "huggingface-cli",
+                "hf",
                 "download",
                 "facebook/wav2vec2-base-960h",
                 "--local-dir",
-                "./pretrained_models/wav2vec2-base-960h",
+                "/vol/pretrained_models/wav2vec2-base-960h",
             ],
             check=True,
         )
+        # OmniAvatar LoRA
+        subprocess.run(
+            [
+                "hf",
+                "download",
+                "OmniAvatar/OmniAvatar-14B",
+                "--local-dir",
+                "/vol/pretrained_models/OmniAvatar-14B",
+            ],
+            check=True,
+        )
+    # Symlink workspace paths to volume so existing configs work
+    os.makedirs("/workspace/pretrained_models", exist_ok=True)
+    if not os.path.islink("/workspace/pretrained_models/Wan2.1-T2V-14B"):
+        try:
+            os.symlink(
+                "/vol/pretrained_models/Wan2.1-T2V-14B",
+                "/workspace/pretrained_models/Wan2.1-T2V-14B",
+            )
+        except FileExistsError:
+            pass
+    if not os.path.islink("/workspace/pretrained_models/wav2vec2-base-960h"):
+        try:
+            os.symlink(
+                "/vol/pretrained_models/wav2vec2-base-960h",
+                "/workspace/pretrained_models/wav2vec2-base-960h",
+            )
+        except FileExistsError:
+            pass
+    if not os.path.islink("/workspace/pretrained_models/OmniAvatar-14B"):
+        try:
+            os.symlink(
+                "/vol/pretrained_models/OmniAvatar-14B",
+                "/workspace/pretrained_models/OmniAvatar-14B",
+            )
+        except FileExistsError:
+            pass
     cmd = [
         "torchrun",
         "--standalone",
@@ -76,7 +165,7 @@ def train(
     subprocess.run(cmd, check=True)
 
 
-@app.function(image=image, gpu="A100", timeout=60 * 60 * 24)
+@app.function(image=image, gpu="A100", timeout=60 * 60 * 24, volumes={"/vol": vol})
 def train_a100(
     config_path: str = "configs/train_lora.yaml",
     nproc: int = 1,
@@ -85,13 +174,132 @@ def train_a100(
     return train.local(config_path=config_path, nproc=nproc, extra_hp=extra_hp)
 
 
-@app.function(image=image, gpu="H100", timeout=60 * 60 * 24)
+@app.function(image=image, gpu="H100", timeout=60 * 60 * 24, volumes={"/vol": vol})
 def train_h100(
     config_path: str = "configs/train_lora.yaml",
     nproc: int = 1,
     extra_hp: Optional[str] = None,
 ):
     return train.local(config_path=config_path, nproc=nproc, extra_hp=extra_hp)
+
+
+@app.function(image=image, gpu="H200", timeout=60 * 60 * 24, volumes={"/vol": vol})
+def train_h200(
+    config_path: str = "configs/train_lora.yaml",
+    nproc: int = 1,
+    extra_hp: Optional[str] = None,
+):
+    return train.local(config_path=config_path, nproc=nproc, extra_hp=extra_hp)
+
+
+@app.function(image=image, gpu="B200", timeout=60 * 60 * 24, volumes={"/vol": vol})
+def train_b200(
+    config_path: str = "configs/train_lora.yaml",
+    nproc: int = 1,
+    extra_hp: Optional[str] = None,
+):
+    return train.local(config_path=config_path, nproc=nproc, extra_hp=extra_hp)
+
+
+@app.function(image=image, gpu="B200", timeout=60 * 60 * 4, volumes={"/vol": vol})
+def infer_b200(
+    config_path: str = "configs/inference.yaml",
+    input_file: str = "examples/infer_samples.txt",
+):
+    os.chdir("/workspace")
+    # Same env and caches as training
+    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+    os.environ.setdefault("TORCH_ALLOW_TF32", "1")
+    os.environ.setdefault("TORCH_CUDA_ARCH_LIST", "10.0")
+    os.environ.setdefault("HF_HOME", "/vol/hf")
+    os.environ.setdefault("HUGGINGFACE_HUB_CACHE", "/vol/hf")
+    os.environ.setdefault("TRANSFORMERS_CACHE", "/vol/hf")
+
+    # Ensure pretrained weights exist (download if missing)
+    os.makedirs("/vol/pretrained_models", exist_ok=True)
+    need = [
+        "/vol/pretrained_models/Wan2.1-T2V-14B/diffusion_pytorch_model-00001-of-00006.safetensors",
+        "/vol/pretrained_models/Wan2.1-T2V-14B/Wan2.1_VAE.pth",
+        "/vol/pretrained_models/Wan2.1-T2V-14B/models_t5_umt5-xxl-enc-bf16.pth",
+        "/vol/pretrained_models/wav2vec2-base-960h",
+        "/vol/pretrained_models/OmniAvatar-14B/pytorch_model.pt",
+    ]
+    if not all(os.path.exists(p) for p in need):
+        subprocess.run(
+            [
+                "hf",
+                "download",
+                "Wan-AI/Wan2.1-T2V-14B",
+                "--local-dir",
+                "/vol/pretrained_models/Wan2.1-T2V-14B",
+            ],
+            check=True,
+        )
+        subprocess.run(
+            [
+                "hf",
+                "download",
+                "facebook/wav2vec2-base-960h",
+                "--local-dir",
+                "/vol/pretrained_models/wav2vec2-base-960h",
+            ],
+            check=True,
+        )
+        subprocess.run(
+            [
+                "hf",
+                "download",
+                "OmniAvatar/OmniAvatar-14B",
+                "--local-dir",
+                "/vol/pretrained_models/OmniAvatar-14B",
+            ],
+            check=True,
+        )
+
+    # Symlinks into /workspace
+    os.makedirs("/workspace/pretrained_models", exist_ok=True)
+    for name in ["Wan2.1-T2V-14B", "wav2vec2-base-960h", "OmniAvatar-14B"]:
+        dst = f"/workspace/pretrained_models/{name}"
+        src = f"/vol/pretrained_models/{name}"
+        if not os.path.islink(dst):
+            try:
+                os.symlink(src, dst)
+            except FileExistsError:
+                pass
+
+    # Run inference
+    cmd = [
+        "torchrun",
+        "--standalone",
+        "--nproc_per_node=1",
+        "scripts/inference.py",
+        "--config",
+        config_path,
+        "--input_file",
+        input_file,
+    ]
+    print("Running:", " ".join(cmd), flush=True)
+    subprocess.run(cmd, check=True)
+
+    # Copy outputs to volume with fetch hints
+    try:
+        out_dir = "/vol/outputs/infer"
+        os.makedirs(out_dir, exist_ok=True)
+        # Find mp4s under demo_out
+        for mp4 in glob.glob("demo_out/**/*.mp4", recursive=True):
+            base = os.path.basename(mp4)
+            vol_path = os.path.join(out_dir, base)
+            try:
+                subprocess.run(["cp", "-f", mp4, vol_path], check=True)
+                print(f"[infer] Saved to volume: {vol_path}", flush=True)
+                print(
+                    f"[infer] Fetch locally with: modal volume get {VOL_NAME} outputs/infer/{base} ./{base}",
+                    flush=True,
+                )
+            except Exception:
+                pass
+    except Exception:
+        pass
 
 
 if __name__ == "__main__":
