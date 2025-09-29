@@ -1,3 +1,9 @@
 data/
 raw_mov/
 __pycache__/
+*.mp4
+*.mp3
+*.MP3
+*.png
+*.jpg
+*.jpeg
