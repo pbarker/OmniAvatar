@@ -8,7 +8,7 @@ wav2vec_path: pretrained_models/wav2vec2-base-960h
 exp_path: pretrained_models/OmniAvatar-14B
 num_persistent_param_in_dit:  # You can set `num_persistent_param_in_dit` to a small number to reduce VRAM required. 
 
-reload_cfg: True
+reload_cfg: False
 sp_size: 1
 
 # 数据参数
@@ -35,3 +35,21 @@ negative_prompt: "Vivid color tones, background/camera moving quickly, screen sw
 silence_duration_s: 0.3
 use_fsdp: False
 tea_cache_l1_thresh: 0 # 0.14 The larger this value is, the faster the speed, but the worse the visual quality. TODO check value
+
+# Inference behavior flags
+i2v: True
+use_audio: True
+random_prefix_frames: True
+
+# LoRA settings for OmniAvatar adapter during inference
+train_architecture: "lora"
+lora_target_modules: "q,k,v,o,ffn.0,ffn.2"
+init_lora_weights: "kaiming"
+lora_rank: 128
+lora_alpha: 64.0
+
+# Explicit model overrides so input channels match I2V (latents 16 + ref 16 + mask 1 = 33)
+model_config:
+  has_image_input: True
+  in_dim: 33
+  audio_hidden_size: 32
