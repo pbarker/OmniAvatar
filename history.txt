@@ -1,0 +1,58 @@
+OmniAvatar Project History (hand-off summary)
+===========================================
+
+2025-09-xx – Initial Exploration & Requirements
+----------------------------------------------
+- Reviewed `README.md`, code structure, and `paper.txt` to understand the OmniAvatar LoRA fine-tuning goals.
+- Confirmed that training should match the paper’s recipe: FlowMatch objective, audio conditioning, two-phase resolution schedule, LoRA adapters on Wan 14B DiT.
+
+LoRA Training Pipeline
+----------------------
+- Authored `scripts/train_lora.py` implementing the full LoRA fine-tuning loop:
+  • Inject LoRA adapters with automatic rank/alpha detection from checkpoints.
+  • Manifest-driven dataset loader with caching for prompts, VAE latents, and image latents.
+  • FlowMatch scheduler, gradient checkpointing, Deepspeed (optional), audio CFG dropout.
+  • Two-phase resolution scheduling (480p then mixed 480p/720p) and VRAM logging.
+  • Moving-average loss, eval holdout with MP4 previews, early stopping, preflight tests.
+- Added `configs/train_lora.yaml` capturing all hyperparameters (LoRA checkpoint default, schedule, evaluation knobs, VRAM controls).
+- Created `scripts/prepare_mov_dataset.py` to convert `.mov` sources into 5s clips with audio/reference frame extraction and manifest generation.
+
+Modal Cloud Integration
+-----------------------
+- Authored `scripts/modal_train.py` to run training and inference on Modal GPUs (A10G/A100/H100/H200/B200):
+  • Automated download/symlink of Wan base weights, wav2vec, and OmniAvatar LoRA into a persistent volume.
+  • Functions for distributed training, inference, smoke tests, and command-line entrypoints.
+  • Added inference-only endpoint (`infer_endpoint`) and smoke-test web endpoint (`smoke_test`).
+- Implemented copy-to-volume helpers so eval/preflight outputs are fetchable with `modal volume get` commands.
+
+Inference Improvements
+----------------------
+- Enhanced `scripts/inference.py` to support debug logging, LoRA toggling, and audio/image diagnostics.
+- Added optional per-frame statistics to help explain noisy generations.
+- Ensured inference pipeline aligns with training (LoRA active by default, `reload_cfg=False`, i2v/audio flags pinned).
+
+Preflight & Debugging Enhancements
+----------------------------------
+- Added preflight inference step before training: runs on example prompt and eval holdout, saves MP4, reference image, and fetch instructions.
+- Implemented VRAM logging (`torch.cuda.memory_allocated` and `nvidia-smi`) per training step, plus periodic fetch hints for holdout evaluations.
+- Addressed modal volume copy issues and ensured `/vol/outputs/{infer,eval}` are created.
+- Added debug prints for manifest paths and dataset locations to avoid mistakes with prompts/images/audio.
+
+UV-based Dependency Management
+------------------------------
+- Introduced `pyproject.toml` using Hatch + UV and migrated dependency list from `requirements.txt`.
+- Integrated UV in local workflow and Modal image build (`.uv_sync` with `extras=["train"]`).
+- Ensured runtime PATH/VIRTUAL_ENV environment variables point to the UV-managed venv for both training and inference.
+
+Miscellaneous Fixes
+-------------------
+- Updated many utilities to better align with OmniAvatar spec (audio pack usage, mask handling, FlowMatch scheduler choices).
+- Added detailed error handling/logging for early stopping, evaluation, and preflight failures.
+- Ensured huggingface CLI usage works (download path translation) and added instructions for dataset persistence across Modal runs.
+
+Open Items / Next Steps
+-----------------------
+- Evaluate inference outputs post-LoRA fix to verify that frames after the first reference stabilize; adjust CFG or audio scaling if still noisy.
+- Consider locking the UV environment (`uv lock`) before deployment if deterministic builds are required.
+- If additional datasets manifest, rerun `prepare_mov_dataset.py` and update `configs/train_lora.yaml` paths before fine-tuning.
+

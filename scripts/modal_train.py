@@ -1,6 +1,9 @@
 import glob
 import os
+import re
+import statistics
 import subprocess
+import sys
 import tempfile
 import urllib.request
 from typing import Any, List, Optional
@@ -17,14 +20,12 @@ vol = modal.Volume.from_name(VOL_NAME, create_if_missing=True)
 image = (
     modal.Image.debian_slim(python_version="3.12")
     .apt_install("ffmpeg")
-    .pip_install_from_requirements("requirements.txt")
-    .pip_install("fastapi[standard]>=0.110")
-    .run_commands(
-        # Install matching CUDA wheels without pinning exact versions
-        "pip install --upgrade pip",
-        # "pip install --index-url https://download.pytorch.org/whl/cu126 torch torchvision torchaudio",
-        "pip install torch torchvision torchaudio",
-        "pip install deepspeed",
+    .uv_sync(uv_project_dir=REPO_ROOT, extras=["train"])
+    .env(
+        {
+            "PATH": "/.uv/.venv/bin:$PATH",
+            "VIRTUAL_ENV": "/.uv/.venv",
+        }
     )
     .add_local_dir(local_path=REPO_ROOT, remote_path="/workspace")
 )
@@ -41,6 +42,35 @@ def _prepare_inference_env():
     os.environ.setdefault("HF_HOME", "/vol/hf")
     os.environ.setdefault("HUGGINGFACE_HUB_CACHE", "/vol/hf")
     os.environ.setdefault("TRANSFORMERS_CACHE", "/vol/hf")
+    os.environ.setdefault("PATH", "/.uv/.venv/bin:" + os.environ.get("PATH", ""))
+    os.environ.setdefault("VIRTUAL_ENV", "/.uv/.venv")
+    _ensure_python_build_deps()
+
+
+def _ensure_python_build_deps() -> None:
+    try:
+        import setuptools  # noqa: F401
+    except ModuleNotFoundError:
+        subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "ensurepip",
+                "--upgrade",
+            ],
+            check=True,
+        )
+        subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pip",
+                "install",
+                "--quiet",
+                "setuptools",
+            ],
+            check=True,
+        )
 
 
 def _ensure_pretrained_models():
@@ -122,6 +152,63 @@ def _copy_outputs_to_volume() -> List[str]:
     return saved
 
 
+def _parse_signalstats(log: str) -> dict[str, Any]:
+    frame_metrics: dict[int, dict[str, float]] = {}
+    frame = None
+    for line in log.splitlines():
+        if "Parsed_metadata_1" not in line:
+            continue
+        payload = line.split("]", 1)[-1].strip()
+        if payload.startswith("frame:"):
+            match = re.search(r"frame:(\\d+)", payload)
+            if match:
+                frame = int(match.group(1))
+                frame_metrics.setdefault(frame, {})
+        elif frame is not None and "signalstats" in payload:
+            key, val = payload.split("=", 1)
+            key = key.strip().split(".")[-1]
+            try:
+                frame_metrics.setdefault(frame, {})[key] = float(val)
+            except ValueError:
+                continue
+
+    ydiff = [
+        meta["YDIF"]
+        for frame, meta in sorted(frame_metrics.items())
+        if frame > 0 and "YDIF" in meta
+    ]
+    if not ydiff:
+        return {
+            "ok": False,
+            "error": "no YDIF samples parsed from ffmpeg signalstats output",
+        }
+
+    post10 = ydiff[10:] or ydiff
+    sorted_post10 = sorted(post10)
+
+    def pct(vals: list[float], p: float) -> float:
+        if not vals:
+            return float("nan")
+        idx = int(round(p * (len(vals) - 1)))
+        idx = max(0, min(len(vals) - 1, idx))
+        return vals[idx]
+
+    last60 = ydiff[-60:] or ydiff
+    spikes = [(i + 1, val) for i, val in enumerate(ydiff) if val > 40.0]
+
+    return {
+        "ok": True,
+        "frames_analysed": len(ydiff),
+        "mean_ydif": statistics.mean(ydiff),
+        "median_ydif": statistics.median(ydiff),
+        "p05_post10": pct(sorted_post10, 0.05),
+        "p95_post10": pct(sorted_post10, 0.95),
+        "last60_mean": statistics.mean(last60),
+        "last60_max": max(last60),
+        "high_delta_frames": spikes,
+    }
+
+
 def _run_inference(
     config_path: str, input_file: str, extra_hp: Optional[str] = None
 ) -> List[str]:
@@ -161,6 +248,8 @@ def train(
     os.environ.setdefault("HF_HOME", "/vol/hf")
     os.environ.setdefault("HUGGINGFACE_HUB_CACHE", "/vol/hf")
     os.environ.setdefault("TRANSFORMERS_CACHE", "/vol/hf")
+    os.environ.setdefault("PATH", "/.uv/.venv/bin:" + os.environ.get("PATH", ""))
+    os.environ.setdefault("VIRTUAL_ENV", "/.uv/.venv")
     # Expose volume name to training script for fetch hints
     os.environ.setdefault("OMNIAVATAR_MODAL_VOLUME", VOL_NAME)
     # Deepspeed: avoid building CUDA ops inside container
@@ -545,6 +634,71 @@ def smoke_test(index: int = 1, config_path: str = "configs/inference.yaml"):
         }
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
+
+@app.function(image=image, timeout=60 * 20, volumes={"/vol": vol})
+def stability_report(video_name: Optional[str] = None) -> dict[str, Any]:
+    """Run ffmpeg signalstats on a saved MP4 inside the Modal volume and summarise YDIF metrics."""
+
+    _prepare_inference_env()
+    outputs_dir = "/vol/outputs/infer"
+    os.makedirs(outputs_dir, exist_ok=True)
+
+    target_path: Optional[str]
+    if video_name:
+        candidate = os.path.join(outputs_dir, video_name)
+        if not os.path.exists(candidate):
+            return {
+                "ok": False,
+                "error": f"video {candidate} not found on volume {VOL_NAME}",
+            }
+        target_path = candidate
+    else:
+        mp4s = sorted(
+            glob.glob(os.path.join(outputs_dir, "*.mp4")),
+            key=os.path.getmtime,
+            reverse=True,
+        )
+        if not mp4s:
+            return {
+                "ok": False,
+                "error": f"no MP4 files found under {outputs_dir}; run inference first",
+            }
+        target_path = mp4s[0]
+
+    cmd = [
+        "ffmpeg",
+        "-hide_banner",
+        "-i",
+        target_path,
+        "-vf",
+        "signalstats,metadata=print",
+        "-f",
+        "null",
+        "-",
+    ]
+
+    try:
+        proc = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=True,
+            text=True,
+        )
+    except subprocess.CalledProcessError as err:
+        return {
+            "ok": False,
+            "error": f"ffmpeg failed ({err.returncode})",
+            "output": err.stdout,
+            "video_path": target_path,
+        }
+
+    stats = _parse_signalstats(proc.stdout)
+    stats["video_path"] = target_path
+    if "raw_log" in stats:
+        stats.pop("raw_log", None)
+    return stats
 
 
 if __name__ == "__main__":

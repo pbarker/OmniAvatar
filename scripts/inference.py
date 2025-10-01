@@ -1,8 +1,221 @@
+import importlib.metadata as importlib_metadata
 import os
 import subprocess
 import sys
+import types
 from datetime import datetime
 from glob import glob
+
+
+def ensure_modern_torch():
+    desired_suffix = "+cu129"
+    desired_version = "2.8.0"
+    try:
+        installed_version = importlib_metadata.version("torch")
+    except importlib_metadata.PackageNotFoundError:
+        installed_version = None
+
+    needs_upgrade = True
+    if installed_version is not None:
+        if installed_version.endswith(desired_suffix):
+            needs_upgrade = False
+        elif installed_version.startswith(desired_version) and "cu" in installed_version:
+            needs_upgrade = False
+
+    if not needs_upgrade:
+        return
+
+    # Ensure pip is available before attempting an install
+    try:
+        import ensurepip
+
+        ensurepip.bootstrap(upgrade=True)
+    except Exception:
+        pass
+
+    install_cmd = [
+        sys.executable,
+        "-m",
+        "pip",
+        "install",
+        "--upgrade",
+        "--index-url",
+        "https://download.pytorch.org/whl/cu129",
+        "torch==2.8.0",
+        "torchaudio==2.8.0",
+        "torchvision==0.23.0",
+    ]
+    subprocess.run(install_cmd, check=True)
+
+
+ensure_modern_torch()
+
+# Stub out yunchang and dependent modules so GPU-incompatible kernels are not
+# imported on Hopper/B200 where matching wheels are unavailable.
+def _register_stub_module(name: str, attrs: dict[str, object]) -> None:
+    mod = types.ModuleType(name)
+    for k, v in attrs.items():
+        setattr(mod, k, v)
+    sys.modules[name] = mod
+
+
+def _no_op(*args, **kwargs):
+    return None
+
+
+def _unsupported(*args, **kwargs):
+    raise RuntimeError("yunchang long-context attention is disabled on this deployment")
+
+
+class _NoOpAttention:
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def __call__(self, *args, **kwargs):
+        _unsupported()
+
+
+class _ProcessGroupStub:
+    def __init__(self):
+        self.ULYSSES_PG = None
+        self.RING_PG = None
+
+
+_process_group_stub = _ProcessGroupStub()
+
+
+def _set_seq_parallel_pg(
+    sp_ulysses_degree, sp_ring_degree, rank, world_size, use_ulysses_low=True
+):
+    try:
+        import torch.distributed as _dist
+    except ImportError:  # pragma: no cover
+        _process_group_stub.ULYSSES_PG = None
+        _process_group_stub.RING_PG = None
+        return None, None
+
+    if not _dist.is_initialized():
+        _process_group_stub.ULYSSES_PG = None
+        _process_group_stub.RING_PG = None
+        return None, None
+
+    sp_degree = max(1, sp_ulysses_degree * sp_ring_degree)
+    if world_size % sp_degree != 0:
+        raise ValueError(
+            f"world_size {world_size} must be divisible by sequence parallel degree {sp_degree}"
+        )
+
+    dp_degree = world_size // sp_degree
+    world_group = _dist.group.WORLD
+
+    def make_group(ranks):
+        if len(ranks) <= 1:
+            return world_group
+        return _dist.new_group(ranks)
+
+    ulysses_pg = world_group
+    ring_pg = world_group
+
+    if sp_degree > 1:
+        ulysses_pg = None
+        ring_pg = None
+        if use_ulysses_low:
+            for dp_rank in range(dp_degree):
+                offset = dp_rank * sp_degree
+                for i in range(sp_ring_degree):
+                    ranks = list(
+                        range(
+                            i * sp_ulysses_degree + offset,
+                            (i + 1) * sp_ulysses_degree + offset,
+                        )
+                    )
+                    group = make_group(ranks)
+                    if rank in ranks:
+                        ulysses_pg = group
+                for i in range(sp_ring_degree):
+                    ring_ranks = list(
+                        range(i + offset, sp_degree + offset, sp_ring_degree)
+                    )
+                    group = make_group(ring_ranks)
+                    if rank in ring_ranks:
+                        ring_pg = group
+        else:
+            for dp_rank in range(dp_degree):
+                offset = dp_rank * sp_degree
+                for i in range(sp_ring_degree):
+                    ring_ranks = list(
+                        range(
+                            i * sp_ring_degree + offset,
+                            (i + 1) * sp_ring_degree + offset,
+                        )
+                    )
+                    group = make_group(ring_ranks)
+                    if rank in ring_ranks:
+                        ring_pg = group
+                for i in range(sp_ulysses_degree):
+                    ranks = list(range(i + offset, sp_degree + offset, sp_ulysses_degree))
+                    group = make_group(ranks)
+                    if rank in ranks:
+                        ulysses_pg = group
+
+    _process_group_stub.ULYSSES_PG = ulysses_pg
+    _process_group_stub.RING_PG = ring_pg
+    return ulysses_pg, ring_pg
+
+
+_register_stub_module(
+    "yunchang",
+    {
+        "set_seq_parallel_pg": _set_seq_parallel_pg,
+        "ring_flash_attn_func": _unsupported,
+        "UlyssesAttention": _NoOpAttention,
+        "LongContextAttention": _NoOpAttention,
+        "LongContextAttentionQKVPacked": _NoOpAttention,
+        "PROCESS_GROUP": _process_group_stub,
+    },
+)
+
+
+_register_stub_module(
+    "yunchang.globals",
+    {
+        "PROCESS_GROUP": _process_group_stub,
+        "set_seq_parallel_pg": _set_seq_parallel_pg,
+    },
+)
+
+for sub in ("hybrid", "ring", "ulysses"):
+    _register_stub_module(
+        f"yunchang.{sub}",
+        {
+            "set_seq_parallel_pg": _set_seq_parallel_pg,
+            "ring_flash_attn_func": _unsupported,
+            "UlyssesAttention": _NoOpAttention,
+            "LongContextAttention": _NoOpAttention,
+            "LongContextAttentionQKVPacked": _NoOpAttention,
+        },
+    )
+
+if "xfuser.core.long_ctx_attention" not in sys.modules:
+    _register_stub_module(
+        "xfuser.core.long_ctx_attention",
+        {"xFuserLongContextAttention": _NoOpAttention},
+    )
+
+# Ensure build tooling for optional native extensions is ready when allowed
+try:
+    import setuptools  # noqa: F401
+except ModuleNotFoundError:
+    try:
+        import ensurepip
+
+        ensurepip.bootstrap(upgrade=True)
+    except Exception:
+        pass
+    subprocess.run(
+        [sys.executable, "-m", "pip", "install", "--quiet", "setuptools"],
+        check=True,
+    )
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 import math
@@ -205,6 +418,7 @@ class WanInferencePipeline(nn.Module):
         model = inject_adapter_in_model(lora_config, model)
 
         # Lora pretrained lora weights
+        updated = unexpected = 0
         if pretrained_lora_path is not None:
             state_dict = load_state_dict(pretrained_lora_path)
             if state_dict_converter is not None:
@@ -213,11 +427,12 @@ class WanInferencePipeline(nn.Module):
                 state_dict, strict=False
             )
             all_keys = [i for i, _ in model.named_parameters()]
-            num_updated_keys = len(all_keys) - len(missing_keys)
-            num_unexpected_keys = len(unexpected_keys)
+            updated = len(all_keys) - len(missing_keys)
+            unexpected = len(unexpected_keys)
             print(
-                f"{num_updated_keys} parameters are loaded from {pretrained_lora_path}. {num_unexpected_keys} parameters are unexpected."
+                f"{updated} parameters are loaded from {pretrained_lora_path}. {unexpected} parameters are unexpected."
             )
+        return updated, unexpected
 
     def forward(
         self,

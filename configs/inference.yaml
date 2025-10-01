@@ -26,8 +26,8 @@ max_hw: 720 # 720: 480p; 1280: 720p
 max_tokens: 30000  
 seq_len: 200
 overlap_frame: 13 # must be 1 + 4*n
-guidance_scale: 4.5
-audio_scale: 
+guidance_scale: 4.0
+audio_scale: 5.5
 num_steps: 50
 fps: 25
 sample_rate: 16000
@@ -39,7 +39,7 @@ tea_cache_l1_thresh: 0 # 0.14 The larger this value is, the faster the speed, bu
 # Inference behavior flags
 i2v: True
 use_audio: True
-random_prefix_frames: True
+random_prefix_frames: False
 
 # LoRA settings for OmniAvatar adapter during inference
 train_architecture: "lora"

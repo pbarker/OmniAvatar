@@ -1,0 +1,55 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "omniavatar"
+version = "0.1.0"
+description = "Training, inference, and tooling for the OmniAvatar LoRA fine-tuning pipeline"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+  { name = "OmniAvatar" }
+]
+dependencies = [
+  "torch==2.4.0",
+  "torchvision==0.19.0",
+  "torchaudio==2.4.0",
+  "librosa==0.10.2.post1",
+  "tqdm",
+  "peft>=0.17.0",
+  "transformers==4.52.3",
+  "scipy==1.14.0",
+  "numpy==1.26.4",
+  "xfuser==0.4.1",
+  "ftfy",
+  "einops",
+  "modal",
+  "pyyaml",
+  "av",
+  "huggingface-hub[cli]",
+]
+
+[project.optional-dependencies]
+train = [
+  "deepspeed>=0.14.0"
+]
+dev = [
+  "ruff>=0.5.5",
+  "pytest>=8.3"
+]
+
+[tool.uv]
+managed = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["OmniAvatar"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "OmniAvatar",
+  "scripts",
+  "configs",
+  "README.md",
+  "requirements.txt"
+]
